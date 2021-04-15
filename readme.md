@@ -6,7 +6,7 @@ Classification is performed on publication labels obtained from mediabiasfactche
 Classification is performed utilizing the following fully-configurable techniques:
 - AdaBoost Ensemble Classification
 - Gradient Boosting Ensemble Classification
-- Extremely Random Trees Enseble Classification
+- Extremely Random Trees Ensemble Classification
 - PyTorch Neural Network Model
 
 
