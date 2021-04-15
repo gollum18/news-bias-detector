@@ -115,14 +115,15 @@ class EnsembleClassificationModel:
         train_x, train_y, test_x, test_y = sample(df)
 
         classifiers = {
-            'AdaBoostClassifier': AdaBoostClassifier(**ab_params), 
-            'GradientBoostingClassifier': GradientBoostingClassifier(**gb_params), 
-            'ExtraTreesClassifier': ExtraTreesClassifier(**rf_params)
+            'AdaBoost': AdaBoostClassifier(**ab_params), 
+            'Gradient Boosting': GradientBoostingClassifier(**gb_params), 
+            'Extremely Random Trees': ExtraTreesClassifier(**rf_params)
         }
         
         test_y_ravel = np.ravel(test_y,order='C')
 
         for k, v in classifiers.items():
+            print(f'Running {k} classifier...')
             v.fit(train_x, np.ravel(train_y,order='C'))
             y_out = v.predict(test_x)
             score = v.score(test_x, test_y_ravel)
@@ -289,21 +290,17 @@ def save_model(model, path='data/pytorch_model.mod'):
         sys.exit(1)
 
 
-def ensemble_runner():
-    parser = argparse.ArgumentParser()
-    # TODO: Add in parmeters for the three ensemble classifiers
-    args = parser.parse_args()
-    model = EnsembleClassificationModel()
-    model.run_classification()
+def ensemble_runner(*args, **kwargs):
+    model = EnsembleClassificationModel(kwargs['filepath'])
+    model.run_classification(ab_params=kwargs['ab_params'], gb_params=kwargs['gb_params'], rf_params=kwargs['rf_params'])
 
 
-def dnn_runner():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--use-cuda', dest='use_cuda', type=bool, default=True)
-    parser.add_argument('--epochs', dest='epochs', type=int, default=100)
-    parser.add_argument('--batch-size', dest='batch_size', type=int, default=64)
-    args = parser.parse_args()
-    df = pd.read_csv('data/features.csv')
+def dnn_runner(**kwargs):
+    try:
+        df = pd.read_csv(kwargs['filepath'])
+    except IOError as e:
+        print(e)
+        sys.exit(1)
     df.dropna(inplace=True)
     train_x, train_y, test_x, test_y = sample(df)
     
@@ -313,7 +310,7 @@ def dnn_runner():
     train_weights = train_set.value_counts() / len(train_set)
     train_loader = torch.utils.data.DataLoader(
         dataset=FeatureDataset(train_set),
-        batch_size=args.batch_size,
+        batch_size=kwargs['batch_size'],
         sampler=torch.utils.data.WeightedRandomSampler(
             weights=train_weights.tolist(),
             num_samples=len(train_set)
@@ -334,11 +331,185 @@ def dnn_runner():
     )
     model = NNClassificationModel()
     print('Now Training...')
-    train_model(args.use_cuda, model, args.epochs, train_loader)
+    train_model(kwargs['use_cuda'], model, kwargs['epochs'], train_loader)
     print('Now Testing...')
-    test_model(args.use_cuda, model, test_loader)
+    test_model(kwargs['use_cuda'], model, test_loader)
     save_model(model)
 
 
 if __name__ == '__main__':
-    ensemble_runner()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('runner', type=str, default='ensemble', help='One of {\'ensemble\', \'nn\'} (default:\'ensemble\')')
+    parser.add_argument('--filepath', type=str, default='data/features.csv', help='The path to the input features file (default: data/features.csv).')
+    parser.add_argument('--use-cuda', dest='use_cuda', type=bool, default=False,
+        help='Whether to use CUDA acceleration. You must have an appropriate version of PyTorch installed as well as the correct version of CUDA to match it. You must also have a CUDA enabled (Nvidia) GPU.'
+    )
+    parser.add_argument('--epochs', dest='epochs', type=int, default=100,
+        help='The number of training iterations.'
+    )
+    parser.add_argument('--batch-size', dest='batch_size', type=int, default=64,
+        help='The number of instances to train/validate with in a single batch.'
+    )
+    parser.add_argument('--ab-n-estimators', dest='ab_n_estimators', type=int, default=50, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.AdaBoostClassifier.html'
+    )
+    parser.add_argument('--ab-learning-rate', dest='ab_learning_rate', type=float, default=1, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.AdaBoostClassifier.html'
+    )
+    parser.add_argument('--ab-algorithm', dest='ab_algorithm', type=str, default='SAMME.R', 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.AdaBoostClassifier.html'
+    )
+    parser.add_argument('--ab-random-state', dest='ab_random_state', type=int, default=None, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.AdaBoostClassifier.html'
+    )
+    parser.add_argument('--gb-loss', dest='gb_loss', type=str, default='deviance', 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.GradientBoostingClassifier.html'
+    )
+    parser.add_argument('--gb-learning-rate', dest='gb_learning_rate', type=float, default=0.1, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.GradientBoostingClassifier.html'
+    )
+    parser.add_argument('--gb-n-estimators', dest='gb_n_estimators', type=int, default=100, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.GradientBoostingClassifier.html'
+    )
+    parser.add_argument('--gb-subsample', dest='gb_subsample', type=float, default=1.0, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.GradientBoostingClassifier.html'
+    )
+    parser.add_argument('--gb-criterion', dest='gb_criterion', type=str, default='friedman_mse', 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.GradientBoostingClassifier.html'
+    )
+    parser.add_argument('--gb-min-samples-split', dest='gb_min_samples_split', type=int, default=2, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.GradientBoostingClassifier.html'
+    )
+    parser.add_argument('--gb-min-samples-leaf', dest='gb_min_samples_leaf', type=int, default=1, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.GradientBoostingClassifier.html'
+    )
+    parser.add_argument('--gb-min-weight-fraction-leaf', dest='gb_min_weight_fraction_leaf', type=float, default=0.0, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.GradientBoostingClassifier.html'
+    )
+    parser.add_argument('--gb-max-depth', dest='gb_max_depth', type=int, default=3,
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.GradientBoostingClassifier.html'
+    )
+    parser.add_argument('--gb-min-impurity-decrease', dest='gb_min_impurity_decrease', type=float, default=0.0, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.GradientBoostingClassifier.html'
+    )
+    parser.add_argument('--gb-random-state', dest='gb_random_state', type=int, default=None, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.GradientBoostingClassifier.html'
+    )
+    parser.add_argument('--gb-max-leaf-nodes', dest='gb_max_leaf_nodes', type=int, default=None, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.GradientBoostingClassifier.html'
+    )
+    parser.add_argument('--gb-warm-start', dest='gb_warm_start', type=bool, default=False, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.GradientBoostingClassifier.html'
+    )
+    parser.add_argument('--gb-validation-fraction', dest='gb_validation_fraction', type=float, default=0.1, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.GradientBoostingClassifier.html'
+    )
+    parser.add_argument('--gb-n-iter-no-change', dest='gb_n_iter_no_change', type=int, default=None, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.GradientBoostingClassifier.html'
+    )
+    parser.add_argument('--gb-tolerance', dest='gb_tolerance', type=float, default=1e-4, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.GradientBoostingClassifier.html'
+    )
+    parser.add_argument('--gb-ccp-alpha', dest='gb_ccp_alpha', type=float, default=0.0, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.GradientBoostingClassifier.html'
+    )
+    parser.add_argument('--ert-n-estimators', dest='ert_n_estimators', type=int, default=100, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.ExtraTreesClassifier.html'
+    )
+    parser.add_argument('--ert-criterion', dest='ert_criterion', type=str, default='gini', 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.ExtraTreesClassifier.html'
+    )
+    parser.add_argument('--ert-max-depth', dest='ert_max_depth', type=int, default=None, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.ExtraTreesClassifier.html'
+    )
+    parser.add_argument('--ert-min-samples-split', dest='ert_min_samples_split', type=int, default=2, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.ExtraTreesClassifier.html'
+    )
+    parser.add_argument('--ert-min-samples-leaf', dest='ert_min_samples_leaf', type=int, default=1, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.ExtraTreesClassifier.html'
+    )
+    parser.add_argument('--ert-min-weight-fraction-leaf', dest='ert_min_weight_fraction_leaf', type=float, default=0.0, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.ExtraTreesClassifier.html'
+    )
+    parser.add_argument('--ert-max-leaf-nodes', dest='ert_max_leaf_nodes', type=int, default=None, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.ExtraTreesClassifier.html'
+    )
+    parser.add_argument('--ert-min-impurity-decrease', dest='ert_min_impurity_decrease', type=float, default=0.0, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.ExtraTreesClassifier.html'
+    )
+    parser.add_argument('--ert-bootstrap', dest='ert_bootstrap', type=bool, default=False, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.ExtraTreesClassifier.html'
+    )
+    parser.add_argument('--ert-oob-score', dest='ert_oob_score', type=bool, default=False, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.ExtraTreesClassifier.html'
+    )
+    parser.add_argument('--ert-n-jobs', dest='ert_n_jobs', type=int, default=None, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.ExtraTreesClassifier.html'
+    )
+    parser.add_argument('--ert-random-state', dest='ert_random_state', type=int, default=None, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.ExtraTreesClassifier.html'
+    )
+    parser.add_argument('--ert-warm-start', dest='ert_warm_start', type=bool, default=False, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.ExtraTreesClassifier.html'
+    )
+    parser.add_argument('--ert-ccp-alpha', dest='ert_ccp_alpha', type=float, default=0.0, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.ExtraTreesClassifier.html'
+    )
+    parser.add_argument('--ert-max-samples', dest='ert_max_samples', type=float, default=None, 
+        help='Please see https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.ExtraTreesClassifier.html'
+    )
+    args = parser.parse_args()
+
+    if args.runner == 'ensemble':
+        ab_params = {
+            'n_estimators': args.ab_n_estimators,
+            'learning_rate': args.ab_learning_rate,
+            'algorithm': args.ab_algorithm,
+            'random_state': args.ab_random_state
+        }
+        gb_params = {
+            'loss': args.gb_loss,
+            'learning_rate': args.gb_learning_rate,
+            'n_estimators': args.gb_n_estimators,
+            'subsample': args.gb_subsample,
+            'criterion': args.gb_criterion,
+            'min_samples_split': args.gb_min_samples_split,
+            'min_samples_leaf': args.gb_min_samples_leaf,
+            'min_weight_fraction_leaf': args.gb_min_weight_fraction_leaf,
+            'max_depth': args.gb_max_depth,
+            'min_impurity_decrease': args.gb_min_impurity_decrease,
+            'random_state': args.gb_random_state,
+            'max_leaf_nodes': args.gb_max_leaf_nodes,
+            'warm_start': args.gb_warm_start,
+            'validation_fraction': args.gb_validation_fraction,
+            'n_iter_no_change': args.gb_n_iter_no_change,
+            'tol': args.gb_tolerance,
+            'ccp_alpha': args.gb_ccp_alpha
+        }
+        rf_params = {
+            'n_estimators': args.ert_n_estimators,
+            'criterion': args.ert_criterion,
+            'max_depth': args.ert_max_depth,
+            'min_samples_split': args.ert_min_samples_split,
+            'min_samples_leaf': args.ert_min_samples_leaf,
+            'min_weight_fraction_leaf': args.ert_min_weight_fraction_leaf,
+            'max_leaf_nodes': args.ert_max_leaf_nodes,
+            'min_impurity_decrease': args.ert_min_impurity_decrease,
+            'bootstrap': args.ert_bootstrap,
+            'oob_score': args.ert_oob_score,
+            'n_jobs': args.ert_n_jobs,
+            'random_state': args.ert_random_state,
+            'warm_start': args.ert_warm_start,
+            'ccp_alpha': args.ert_ccp_alpha,
+            'max_samples': args.ert_max_samples
+        }
+        kwargs={'filepath': args.filepath, 'ab_params':ab_params, 'gb_params':gb_params, 'rf_params':rf_params}
+        ensemble_runner(**kwargs)
+    elif args.runner == 'nn':
+        kwargs = {
+            'filepath': args.filepath,
+            'use_cuda': args.use_cuda,
+            'epochs': args.epochs,
+            'batch_size': args.batch_size
+        }
+        dnn_runner(**kwargs)
