@@ -10,6 +10,12 @@ Classification is performed utilizing the following fully-configurable technique
 - PyTorch Neural Network Model
 
 
+The `data` folder only currently contains generated features as the features file itself is ~88MB in size. This repository contains code for generating the feature set yourself, but it is space expensive to do so, requiring upwards of ~12GB of RAM. `__init__.py` contains *some of the code* needed to generate the features but it is incomplete. If you want to generate the features yourself, you will need to string together the functions I use to do so from the other modules in the repository.
+
+
+Documentation of all functions is forthcoming.
+
+
 ## How-To
 To run the classifiers do the following:
 1. Open a terminal or PowerShell instance.
