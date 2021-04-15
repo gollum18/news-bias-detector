@@ -17,7 +17,7 @@ To run the classifiers do the following:
 3. Create a Python virtual environment `python3 -m venv venv` on Linux or `python -m venv venv` on Windows.
 4. Activate the virtual environment `. venv/bin/activate` on Linux or `.\venv\Scripts\activate` on Windows.
 5. Install required libraries: `pip install -r requirements.txt`.
-6. Start one of the runner scripts: `python model.py <ensemble|nn>`
+6. Start one of the runner scripts: `python mbd/model.py <ensemble|nn>`
 
 
 Include the `--help` tag will print out automatically generated help text to the console.
