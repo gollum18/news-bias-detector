@@ -139,3 +139,5 @@ cython_debug/
 
 # data driectores
 data/
+test_data/
+train_data/
