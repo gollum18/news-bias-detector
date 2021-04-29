@@ -30,9 +30,7 @@ def run_annotator():
 
 
 if __name__ == '__main__':
-    dataset = FeatureDataset()
-    #for x, y, z, label in dataset:
-    #    print('X:', x)
-    #    print('Y:', y)
-    #    print('Z:', z)
-    #    print('Label', label)
+    io = FeatureIO()
+    df = io.read_features()
+    df = io.normalize(df)
+    io.write_features(df)

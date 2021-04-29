@@ -105,7 +105,8 @@ def generate_semantic_axes(infile='data/antonyms.txt', outfile='data/mft_axes.np
         sys.exit(1)
     for category, pair_set in mft_antonyms.items():
         nvectors = 0
-        avg_vector = np.zeros(shape)
+        avg_virtue = np.zeros(shape)
+        avg_vice = np.zeros(shape)
         for pair in pair_set:
             vice, virtue = pair[0], pair[1]
             try:
@@ -116,13 +117,16 @@ def generate_semantic_axes(infile='data/antonyms.txt', outfile='data/mft_axes.np
                 virtue_vector = model.get_vector(virtue)
             except KeyError:
                 vice_vector = np.zeros(shape)
-            avg_vector += virtue_vector - vice_vector
+            avg_virtue += virtue_vector
+            avg_vice += vice_vector
             nvectors += 1
         if nvectors == 0:
-            avg_vector = np.zeros(shape=avg_vector.shape)
+            avg_virtue = np.zeros(shape=avg_virtue.shape)
+            avg_vice = np.zeros(shape=avg_vice.shape)
         else:
-            avg_vector /= nvectors
-        mft_antonyms[category] = avg_vector
+            avg_virtue /= nvectors
+            avg_vice /= nvectors
+        mft_antonyms[category] = avg_virtue - avg_vice
     np.savez(
         outfile, 
         Harm=mft_antonyms['Harm'], 
@@ -259,7 +263,7 @@ class FeatureGenerator:
     '''Generates features for content from the dataset.'''
 
     def __init__(self, database='news-bias-detector', collection='article-frames', 
-            topn=25, batch_size=25):
+            batch_size=100, topn=25):
         self.database = database
         self.collection = collection
         self.topn = topn
@@ -274,7 +278,12 @@ class FeatureGenerator:
         step_size = doc_count // threads
         for j in range(threads):
             starting_id = j * step_size
-            p = Process(target=do_work, args=[self.database, self.collection, starting_id, step_size, self.topn])
+            p = Process(
+                target=do_work, args=[
+                    self.database, self.collection, starting_id, 
+                    step_size, self.batch_size, self.topn
+                ]
+            )
             p.start()
 
 
@@ -294,7 +303,6 @@ class Annotator:
             for line in f:
                 source, bias = line.split(':')
                 sources[source] = bias.strip('\n').strip('\r\n')
-        self.bias_range = generate_range(list(dict.fromkeys(list(sources.values()))))
         # generate the bias tendencies for each word in the corpus
         word_frame = pd.concat((
             pd.read_csv(
@@ -379,7 +387,7 @@ class FeatureIO:
         '''Writes DF to the indicated file.
         '''
         try:
-            df.to_csv(path, *args, **kwargs)
+            df.to_csv(path, index=False, *args, **kwargs)
         except IOError as e:
             print(e)
             sys.exit(1)

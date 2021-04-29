@@ -3,21 +3,54 @@ import argparse
 import nltk
 import numpy as np
 import pandas as pd
+import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim
 from sklearn.metrics import (
-    f1_score, precision_score, recall_score
+    f1_score, precision_score, recall_score, confusion_matrix,
+    ConfusionMatrixDisplay
 ) 
+import matplotlib.pyplot as plt
 
 from tools import clean_word
 
+from torch.optim.swa_utils import AveragedModel, SWALR
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from pymongo import MongoClient
 from gensim.test.utils import datapath, get_tmpfile
 from gensim.scripts.glove2word2vec import glove2word2vec
 from gensim.models import Word2Vec, KeyedVectors
-from torch.autograd import Variable
+
+
+class RWThreshold(nn.Threshold):
+
+    '''Implements the PyTorch Threshold module utilizing a uniform random walk process to
+    simulate stochastic variations in the threshold activation value.
+    '''
+
+    def __init__(self, threshold: float, value: float, inplace: bool = False, step=0.05) -> None:
+        super(RWThreshold, self).__init__(threshold, value)
+        self.step = step
+
+
+    def _walk(self):
+        p = random.uniform(-self.step, self.step)
+
+        if self.threshold + p > 1:
+            self.threshold = 1
+        elif self.threshold + p < 0:
+            self.threshold = 0
+        else:
+            self.threshold += p
+
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        out = super().forward(input)
+        self._walk()
+        return out
+
 
 
 class EmbeddingModel:
@@ -84,13 +117,38 @@ def load_kv_model(infile='data/glove.6B.100d.kv'):
     return KeyedVectors.load_word2vec_format(infile)
 
 
-def sample(df, beta=0.8, seed=0):
-    train_rows = np.random.choice(df.index.values, int(len(df.index)*(beta)), replace=False)
-    test_rows = np.random.choice(df.index.values, int(len(df.index)*(1-beta)), replace=False)
-    train_set = df.loc[train_rows]
-    test_set = df.loc[test_rows]
-    train_x, train_y = train_set.loc[:, train_set.columns!='bias-label'], train_set.iloc[:,-1:]
-    test_x, test_y = test_set.loc[:, test_set.columns!='bias-label'], test_set.iloc[:,-1:]
+x_columns = [
+    'mft-harm-framing-bias', 'mft-harm-intensity', 'mft-fairness-framing-bias',
+    'mft-fairness-intensity', 'mft-ingroup-framing-bias', 'mft-ingroup-intensity',
+    'mft-authority-framing-bias', 'mft-authority-intensity', 'mft-purity-framing-bias',
+    'mft-purity-intensity', 'mft-general-framing-bias', 'mft-general-intensity'
+]
+y_columns = [
+    'it-cosine-distance', 'it-jaccard-distance', 'it-jensen-shannon-divergence'
+]
+z_columns = [
+    'sa-compound-sentence-valence-min', 'sa-compound-sentence-valence-max',
+    'sa-compound-sentence-valence-median', 'sa-compound-sentence-valence-mean',
+    'sa-compound-sentence-valence-std', 'sa-compound-sentence-valence-var',
+    'sa-negative-sentence-valence-min', 'sa-negative-sentence-valence-max',
+    'sa-negative-sentence-valence-median', 'sa-negative-sentence-valence-mean',
+    'sa-negative-sentence-valence-std', 'sa-negative-sentence-valence-var',
+    'sa-neutral-sentence-valence-min', 'sa-neutral-sentence-valence-max',
+    'sa-neutral-sentence-valence-median', 'sa-neutral-sentence-valence-mean',
+    'sa-neutral-sentence-valence-std', 'sa-neutral-sentence-valence-var',
+    'sa-positive-sentence-valence-min', 'sa-positive-sentence-valence-max',
+    'sa-positive-sentence-valence-median', 'sa-positive-sentence-valence-mean',
+    'sa-positive-sentence-valence-std', 'sa-positive-sentence-valence-var'
+]
+
+
+def sample(df, frac=0.8, random_state=0):
+    train = df.sample(frac=frac, random_state=random_state)
+    train_x = train[x_columns + y_columns + z_columns]
+    train_y = train[['bias-label']]
+    test = df.drop(train.index)
+    test_x = test[x_columns + y_columns + z_columns]
+    test_y = test[['bias-label']]
     return train_x, train_y, test_x, test_y
 
 
@@ -120,31 +178,52 @@ class EnsembleClassificationModel:
             'Extremely Random Trees': ExtraTreesClassifier(**rf_params)
         }
         
+        train_y_ravel = np.ravel(train_y,order='C')
         test_y_ravel = np.ravel(test_y,order='C')
 
         for k, v in classifiers.items():
             print(f'Running {k} classifier...')
-            v.fit(train_x, np.ravel(train_y,order='C'))
+            v.fit(train_x, train_t_ravel)
             y_out = v.predict(test_x)
             score = v.score(test_x, test_y_ravel)
             f1 = f1_score(test_y_ravel, y_out, average='micro')
             precision = precision_score(test_y_ravel, y_out, average='micro')
             recall = recall_score(test_y_ravel, y_out, average='micro')
+            cmatrix = confusion_matrix(y_true=test_y_ravel, y_pred=y_out)
+            disp = ConfusionMatrixDisplay(
+                confusion_matrix=cmatrix,
+                display_labels=v.classes_
+            )
+            disp.plot()
+            plt.savefig('CM_' + k.replace(' ', '_')+'.png', bbox_inches='tight')
             print(f'Classifier: {k}')
             print(f'Accuracy: {score}\nPrecision: {precision}\nRecall: {recall}\nF1: {f1}')
             print()
 
 
-class NNClassificationModel(nn.Module):
+class Model1(nn.Module):
 
     def __init__(self, *args, **kwargs):
-        super(NNClassificationModel, self).__init__(*args, **kwargs)
-        self.linear = nn.Linear(in_features=39, out_features=300)
-        self.hidden = nn.Linear(in_features=300, out_features=6)
-        torch.nn.init.xavier_uniform_(self.linear.weight, gain=1.0)
-        torch.nn.init.xavier_uniform_(self.hidden.weight, gain=1.0)
+        super(Model1, self).__init__(*args, **kwargs)
+        self.linear1 = nn.Linear(
+            in_features=12,
+            out_features=12
+        )
+        self.linear2 = nn.Linear(
+            in_features=3,
+            out_features=3
+        )
+        self.linear3 = nn.Linear(
+            in_features=24,
+            out_features=24
+        )
+        self.linear4 = nn.Linear(
+            in_features=39,
+            out_features=6
+        )
+        
 
-    def forward(self, x):
+    def forward(self, x, y, z):
         '''Performs a forward pass through the model using the input tensors, 
         X, Y, and Z.
 
@@ -152,10 +231,140 @@ class NNClassificationModel(nn.Module):
             (torch.Tensor): A 1d tensor containing class probabilities for the classes 
             defined by the model.
         '''
-        x1 = self.linear(x)
-        x2 = F.relu(x1)
-        e = self.hidden(x2)
-        return e
+        x0, y0, z0 = self.linear1(x), self.linear2(y), self.linear3(z)
+        x1, y1, z1 = F.relu(x0), F.relu(y0), F.relu(z0)
+        x2, y2, z2 = torch.add(x, x1), torch.add(y, y1), torch.add(z, z1)
+        x3, y3, z3 = F.normalize(x2), F.normalize(y2), F.normalize(z2)
+        e0 = torch.cat([x3, y3, z3], dim=1)
+        e1 = self.linear4(e0)
+        e2 = F.relu(e1)
+        return e2
+
+
+class Model2(nn.Module):
+
+    def __init__(self, *args, **kwargs):
+        super(Model2, self).__init__(*args, **kwargs)
+        self.linear1 = nn.Linear(
+            in_features=12,
+            out_features=12
+        )
+        self.linear2 = nn.Linear(
+            in_features=3,
+            out_features=3
+        )
+        self.linear3 = nn.Linear(
+            in_features=24,
+            out_features=24
+        )
+        self.linear4 = nn.Linear(
+            in_features=200,
+            out_features=6
+        )
+        self.bilinear1 = nn.Bilinear(
+            in1_features=12,
+            in2_features=3,
+            out_features=100
+        )
+        self.bilinear2 = nn.Bilinear(
+            in1_features=3,
+            in2_features=24,
+            out_features=100
+        )
+        
+
+    def forward(self, x, y, z):
+        '''Performs a forward pass through the model using the input tensors, 
+        X, Y, and Z.
+
+        Returns:
+            (torch.Tensor): A 1d tensor containing class probabilities for the classes 
+            defined by the model.
+        '''
+        x0, y0, z0 = self.linear1(x), self.linear2(y), self.linear3(z)
+        x1, y1, z1 = F.relu(x0), F.relu(y0), F.relu(z0)
+        a0, b0 = self.bilinear1(x1, y1), self.bilinear2(y1, z1)
+        a1, b1 = F.relu(a0), F.relu(b0)
+        e0 = torch.cat([a1, b1], dim=1)
+        e1 = self.linear4(e0)
+        e2 = F.relu(e1)
+        return e2
+        
+
+
+class Model3(nn.Module):
+
+    def __init__(self, *args, **kwargs):
+        super(Model3, self).__init__(*args, **kwargs)
+        
+
+    def forward(self, x, y, z):
+        '''Performs a forward pass through the model using the input tensors, 
+        X, Y, and Z.
+
+        Returns:
+            (torch.Tensor): A 1d tensor containing class probabilities for the classes 
+            defined by the model.
+        '''
+
+
+class Model3(nn.Module):
+
+    def __init__(self, *args, **kwargs):
+        super(Model3, self).__init__(*args, **kwargs)
+        self.linear1 = nn.Linear(
+            in_features=39,
+            out_features=100
+        )
+        self.linear2 = nn.Linear(
+            in_features=100,
+            out_features=6
+        )
+
+
+    def forward(self, x, y, z):
+        '''Performs a forward pass through the model using the input tensors, 
+        X, Y, and Z.
+
+        Returns:
+            (torch.Tensor): A 1d tensor containing class probabilities for the classes 
+            defined by the model.
+        '''
+        e0 = torch.cat((x, y, z), dim=1)
+        e1 = self.linear1(e0)
+        e2 = F.relu(e1)
+        e3 = self.linear2(e2)
+        return e3
+
+
+class Model5(nn.Module):
+
+    def __init__(self, *args, **kwargs):
+        super(Model5, self).__init__(*args, **kwargs)
+        self.linear1 = nn.Linear(
+            in_features=39,
+            out_features=100
+        )
+        self.linear2 = nn.Linear(
+            in_features=100,
+            out_features=6
+        )
+        self.sta = RWThreshold(threshold=0.5, value=20)
+
+
+    def forward(self, x, y, z):
+        '''Performs a forward pass through the model using the input tensors, 
+        X, Y, and Z.
+
+        Returns:
+            (torch.Tensor): A 1d tensor containing class probabilities for the classes 
+            defined by the model.
+        '''
+        e0 = torch.cat((x, y, z), dim=1)
+        e1 = self.linear1(e0)
+        e2 = self.sta(e1)
+        e3 = self.linear2(e2)
+        return e3
 
 
 # adapted from: https://pytorch.org/tutorials/beginner/data_loading_tutorial.html
@@ -164,8 +373,6 @@ class FeatureDataset(torch.utils.data.Dataset):
     def __init__(self, features, transform=None):
         self.features = features
         self.transform = transform
-        # get the features for each categories from the frame
-        self.x_features = [c for c in self.features.columns if c.startswith('mft-') or c.startswith('it-') or c.startswith('sa-')]
         # convert categorical to numeric for tensorflow
         self.features['bias-label'] = self.features["bias-label"].astype("category")
         self.features['bias-label'] = self.features['bias-label'].cat.codes
@@ -179,24 +386,24 @@ class FeatureDataset(torch.utils.data.Dataset):
         # get the row specifed by idx
         row = self.features.iloc[idx]
 
-        feature_list = [row[f] for f in self.x_features]
-
-        # create the tensors for the x features
-        x = nn.Parameter(torch.Tensor(feature_list))
+        # create the tensors for the various features
+        x = nn.Parameter(torch.Tensor([row[f] for f in x_columns]))
+        y = nn.Parameter(torch.Tensor([row[f] for f in y_columns]))
+        z = nn.Parameter(torch.Tensor([row[f] for f in z_columns]))
 
         # create the tensor for the label data
         label = torch.Tensor([row['bias-label']])
 
-        return x, label
+        return x, y, z, label
 
     
 def train_model(use_cuda, model, epochs, loader, criterion=nn.CrossEntropyLoss(), clip_value=1):
     if use_cuda:
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     
-    #criterion = nn.NLLLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0008)
-    
+
+
     if use_cuda:
         model.cuda()
     else:
@@ -213,15 +420,17 @@ def train_model(use_cuda, model, epochs, loader, criterion=nn.CrossEntropyLoss()
         print("Epoch {}/{}".format(epoch+1, epochs))
         print("-" * 10)
 
-        for x, labels in loader:
+        for x, y, z, labels in loader:
             x = x.to(device)
+            y = y.to(device)
+            z = z.to(device)
             if use_cuda:
                 labels = torch.flatten(labels).type(torch.cuda.LongTensor)
             else:
                 labels = torch.flatten(labels).type(torch.LongTensor)
             labels = labels.to(device)
 
-            outputs = model(x)
+            outputs = model(x, y, z)
 
             optimizer.zero_grad()
             loss = criterion(outputs, labels)
@@ -238,6 +447,53 @@ def train_model(use_cuda, model, epochs, loader, criterion=nn.CrossEntropyLoss()
         print('Accuracy %:', accuracy.item())
 
 
+def test_model_swa(use_cuda, swa_model, loader):
+    if use_cuda:
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+    correct = 0
+    running_scores = 0
+    running_loss = 0
+    running_total = 0
+    running_f1 = 0
+    running_precision = 0
+    running_recall = 0
+
+    torch.optim.swa_utils.update_bn(loader, swa_model)
+
+    with torch.set_grad_enabled(False):
+        for x, y, z, labels in loader:
+            x = x.to(device)
+            y = y.to(device)
+            z = z.to(device)
+            if use_cuda:
+                labels = torch.flatten(labels).type(torch.cuda.LongTensor)
+            else:
+                labels = torch.flatten(labels).type(torch.LongTensor)
+
+            outputs = swa_model(x, y, z)
+
+            loss = criterion(outputs, labels)
+            reverted = torch.argmax(outputs, dim=1)
+
+            running_loss += loss
+            correct += (reverted == labels).float().sum()
+            running_total += torch.numel(reverted)
+            running_scores += 1
+            nlabels = labels.cpu().numpy()
+            nreverted = reverted.cpu().numpy()
+            running_f1 += f1_score(nlabels, nreverted, average='micro')
+            running_precision += precision_score(nlabels, nreverted, average='micro')
+            running_recall += recall_score(nlabels, nreverted, average='micro')
+
+        accuracy = 100 * (correct / running_total)
+        print('Loss:', running_loss.item())
+        print('Accuracy %:', accuracy.item())
+        print('Average F1 Score:', running_f1 / running_scores)
+        print('Average Precision:', running_precision / running_scores)
+        print('Average Recall:', running_recall / running_scores)
+
+
 def test_model(use_cuda, model, loader, criterion=nn.CrossEntropyLoss()):
     if use_cuda:
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -252,14 +508,16 @@ def test_model(use_cuda, model, loader, criterion=nn.CrossEntropyLoss()):
     running_recall = 0
 
     with torch.set_grad_enabled(False):
-        for x, labels in loader:
+        for x, y, z, labels in loader:
             x = x.to(device)
+            y = y.to(device)
+            z = z.to(device)
             if use_cuda:
                 labels = torch.flatten(labels).type(torch.cuda.LongTensor)
             else:
                 labels = torch.flatten(labels).type(torch.LongTensor)
 
-            outputs = model(x)
+            outputs = model(x, y, z)
 
             loss = criterion(outputs, labels)
             reverted = torch.argmax(outputs, dim=1)
@@ -329,12 +587,11 @@ def dnn_runner(**kwargs):
             num_samples=len(test_set)
         )
     )
-    model = NNClassificationModel()
+    model = Model3()
     print('Now Training...')
     train_model(kwargs['use_cuda'], model, kwargs['epochs'], train_loader)
     print('Now Testing...')
     test_model(kwargs['use_cuda'], model, test_loader)
-    save_model(model)
 
 
 if __name__ == '__main__':
@@ -462,6 +719,7 @@ if __name__ == '__main__':
 
     if args.runner == 'ensemble':
         ab_params = {
+            'base_estimator': DecisionTreeClassifier(class_weight='balanced'),
             'n_estimators': args.ab_n_estimators,
             'learning_rate': args.ab_learning_rate,
             'algorithm': args.ab_algorithm,
@@ -501,7 +759,8 @@ if __name__ == '__main__':
             'random_state': args.ert_random_state,
             'warm_start': args.ert_warm_start,
             'ccp_alpha': args.ert_ccp_alpha,
-            'max_samples': args.ert_max_samples
+            'max_samples': args.ert_max_samples,
+            'class_weight': 'balanced'
         }
         kwargs={'filepath': args.filepath, 'ab_params':ab_params, 'gb_params':gb_params, 'rf_params':rf_params}
         ensemble_runner(**kwargs)
